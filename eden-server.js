@@ -172,7 +172,7 @@ const server = http.createServer((req, res) => {
 
   // ---- unified auth gate ----
   // admin-only endpoints: need an admin session token
-  const ADMIN_ONLY = ['/api/admin/add-codes', '/api/admin/gen-codes', '/api/admin/set-perm', '/api/admin/del-code', '/api/admin/del-user', '/api/admin/review', '/api/admin/set-title', '/api/admin/unbind-machine', '/api/admin/allow-device', '/api/vault', '/api/vault-del'];
+  const ADMIN_ONLY = ['/api/admin/add-codes', '/api/admin/gen-codes', '/api/admin/set-perm', '/api/admin/del-code', '/api/admin/del-user', '/api/admin/review', '/api/admin/set-title', '/api/admin/unbind-machine', '/api/admin/allow-device', '/api/admin/change-password', '/api/vault', '/api/vault-del'];
   if (ADMIN_ONLY.indexOf(api) !== -1) {
     const s = getSession(req);
     if (!s) return send(res, 401, { ok: false, error: '未登录或登录已过期' });
@@ -255,6 +255,8 @@ const server = http.createServer((req, res) => {
         return send(res, 401, { ok: false, error: '用户名或密码错误' });
       }
       clearFails(ip, username);
+      // 管理员账号只能在管理端（/admin）登录，客户端仅服务会员
+      if (u.role === 'admin') return send(res, 403, { ok: false, error: '管理员账号请通过管理入口登录（网址后加 /admin）' });
       // 设备绑定：仅会员账号受控（管理员账号为公会自用，多设备可登录）
       // 每账号最多 2 台设备（machine1/machine2），新设备登录需管理员授权
       if (u.role !== 'admin') {
@@ -390,6 +392,28 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // ---- admin: change own password (backend-only) ----
+  if (req.method === 'POST' && api === '/api/admin/change-password') {
+    readBody(req, (b) => {
+      if (!b) return send(res, 400, { ok: false, error: 'bad json' });
+      const username = req.authSession ? req.authSession.username : '';
+      if (!username) return send(res, 401, { ok: false, error: '未登录' });
+      const oldPwd = String(b.oldPassword || '');
+      const newPwd = String(b.newPassword || '');
+      if (!newPwd) return send(res, 400, { ok: false, error: '新密码不能为空' });
+      if (newPwd.length < 3) return send(res, 400, { ok: false, error: '新密码至少 3 位' });
+      const cur = readData();
+      const idx = cur.users.findIndex(u => u.username === username);
+      if (idx === -1) return send(res, 404, { ok: false, error: '账号不存在' });
+      if (cur.users[idx].password !== oldPwd) return send(res, 403, { ok: false, error: '当前密码错误' });
+      cur.users[idx].password = newPwd;
+      writeData(cur);
+      authLog('ADMIN_CHANGE_PASSWORD user=' + username);
+      send(res, 200, { ok: true });
+    });
+    return;
+  }
+
   // ---- admin: delete a user ----
   if (req.method === 'POST' && api === '/api/admin/del-user') {
     readBody(req, (b) => {
@@ -470,13 +494,17 @@ const server = http.createServer((req, res) => {
       const cur = readData();
       const idx = cur.users.findIndex(u => u.username === username);
       if (idx === -1) return send(res, 404, { ok: false, error: '用户不存在' });
-      if (b.password) cur.users[idx].password = String(b.password);
+      if (b.password) {
+        // 修改密码必须校验当前密码（服务器权威校验）
+        if (String(b.oldPassword || '') !== cur.users[idx].password) return send(res, 403, { ok: false, error: '当前密码错误' });
+        cur.users[idx].password = String(b.password);
+      }
       if (typeof b.avatar === 'string') {
         if (b.avatar.length > 400000) return send(res, 400, { ok: false, error: '头像图片过大，请使用小于 300KB 的图片' });
         cur.users[idx].avatar = b.avatar;
       }
       writeData(cur);
-      send(res, 200, { ok: true, user: cur.users[idx] });
+      send(res, 200, { ok: true, user: publicUser(cur.users[idx]) });
     });
     return;
   }
