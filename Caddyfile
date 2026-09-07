@@ -1,0 +1,17 @@
+:80 {
+	root * /usr/share/caddy
+	file_server
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+	handle /admin* {
+		rewrite * /index.html
+		file_server
+	}
+	@html {
+		path *.html /
+	}
+	header @html Cache-Control "no-cache, no-store, must-revalidate"
+	header @html Pragma "no-cache"
+	header @html Expires "0"
+}
